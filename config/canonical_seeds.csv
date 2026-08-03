@@ -1,0 +1,21 @@
+company_id,display_name,ifi_rank,brand_tokens,canonical_norm,country_code,is_brand_primary
+samsung-electronics,"Samsung Electronics Co., Ltd.",1,SAMSUNG,SAMSUNG ELECTRONICS CO LTD,KR,1
+tsmc,"Taiwan Semiconductor Manufacturing Co., Ltd.",2,TSMC|~TAIWAN,TAIWAN SEMICONDUCTOR MANUFACTURING COMPANY LTD,TW,1
+qualcomm,"Qualcomm Incorporated",3,QUALCOMM,QUALCOMM INCORPORATED,US,1
+huawei,"Huawei Technologies Co., Ltd.",4,HUAWEI,HUAWEI TECHNOLOGIES CO LTD,CN,1
+samsung-display,"Samsung Display Co., Ltd.",5,SAMSUNG,SAMSUNG DISPLAY CO LTD,KR,0
+apple,"Apple Inc.",6,APPLE,APPLE INC,US,1
+canon,"Canon Inc.",7,CANON,CANON KABUSHIKI KAISHA,JP,1
+toyota,"Toyota Motor Corporation",8,TOYOTA,TOYOTA JIDOSHA KABUSHIKI KAISHA,JP,1
+dell,"Dell Products L.P.",9,DELL,DELL PRODUCTS L P,US,1
+lg-electronics,"LG Electronics Inc.",10,LG,LG ELECTRONICS INC,KR,1
+ibm,"International Business Machines Corporation",11,IBM|~MACHINES,INTERNATIONAL BUSINESS MACHINES CORPORATION,US,1
+intel,"Intel Corporation",12,INTEL,INTEL CORPORATION,US,1
+boe,"BOE Technology Group Co., Ltd.",13,BOE,BOE TECHNOLOGY GROUP CO LTD,CN,1
+google,"Google LLC",14,GOOGLE,GOOGLE LLC,US,1
+microsoft,"Microsoft Technology Licensing, LLC",15,MICROSOFT,MICROSOFT TECHNOLOGY LICENSING LLC,US,1
+hyundai,"Hyundai Motor Company",16,HYUNDAI,HYUNDAI MOTOR COMPANY,KR,1
+kia,"Kia Corporation",17,KIA,KIA MOTORS CORPORATION,KR,1
+ericsson,"Telefonaktiebolaget LM Ericsson (publ)",18,ERICSSON,TELEFONAKTIEBOLAGET LM ERICSSON PUBL,SE,1
+micron,"Micron Technology, Inc.",19,MICRON,MICRON TECHNOLOGY INC,US,1
+amazon,"Amazon Technologies, Inc.",20,AMAZON,AMAZON TECHNOLOGIES INC,US,1
