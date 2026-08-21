@@ -14,7 +14,7 @@ rules that surface procedural options that were available and not taken.
 |---|---|---|
 | Contents | 14.1M applications, 507M prosecution events | live file wrapper |
 | Currency | **frozen June 2023** | current |
-| Cost | free, instant, no key | Ben's personal API key, rate-limited |
+| Cost | free, instant, no key | your own API key, rate-limited |
 | Use for | baselines, examiner/art-unit benchmarks, historical sweeps | specific cases, anything filed or decided after mid-2023 |
 
 `audit.py` defaults to `--source auto`: corpus first, ODP when the application is
@@ -27,17 +27,20 @@ and the corpus costs nothing. Reserve ODP calls for the specific case in hand.
 
 Requires `duckdb` and `requests` (`pip install -r requirements.txt`).
 
-The ODP key loads automatically from the Windows Credential Manager generic
-credential `USPTO_ODP_API_KEY`, the same mechanism `patent-filing-qc` uses. Never
-print the key. Verify everything with:
+The ODP key is read from the Windows Credential Manager generic credential
+`USPTO_ODP_API_KEY`, falling back to an environment variable of the same name (the
+mechanism `patent-filing-qc` uses). **Never print the key.** Verify everything with:
 
 ```powershell
-python ~/.claude/skills/patent-portfolio-analyzer/scripts/audit.py doctor
+python "$env:USERPROFILE\.claude\skills\patent-portfolio-analyzer\scripts\audit.py" doctor
 ```
 
-The corpus path is resolved from `PATEX_DUCKDB`, then
-`~/source/repos/Patent-Portfolio-Analyzer/data/patex.duckdb`. If it is missing, the
-skill still works in ODP-only mode but cannot produce baselines.
+`doctor` reports corpus size and confirms the API answers, without revealing the key.
+
+The corpus is located in this order: `PATEX_DUCKDB`, then `../data/patex.duckdb`
+relative to this skill (so it works wherever the repo is cloned), then two legacy
+paths. If no corpus is found the skill still runs in ODP-only mode, but **cannot
+produce examiner or art-unit baselines** — those need the 507M-event table.
 
 ## Commands
 
