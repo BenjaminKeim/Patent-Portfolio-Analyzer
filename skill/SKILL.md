@@ -170,32 +170,25 @@ findings because everything was still pending when it froze. One call surfaces s
 
 ## Step 4: the report
 
-`portfolio` prints a readable report by default (`--json` for the raw result). Findings
-are triaged, because the engine will return 257 findings on an 840-application portfolio
-and that is not a to-do list:
+`portfolio` prints a readable report by default (`--json` for the raw result,
+`--max-cases N` to limit each list, `0` for all). Layout:
 
-- **Act on these** — E1 and B2. Specific procedural defects on specific cases.
-- **Worth reviewing** — a rule firing on under 10% of the portfolio. Listed individually.
-- **Portfolio patterns** — a rule firing on more than 10%. Reported as a rate with a
-  small sample, never as a list, because at that volume it describes filing strategy
-  rather than individual lapses. Molex's 153 first-action allowances without a
-  continuation is a house pattern, not 153 mistakes.
+- **Portfolio counts** — issued patents, still pending, abandoned, with the filing
+  window stated. These are counts *within the window*, not a current portfolio total:
+  anything filed after the bulk data stops is absent entirely, and the report says so.
+- **Prosecution events**, each case identified by application number, filing date and
+  title: restriction with no divisional; first-action allowance with no continuation;
+  petition to revive (with its outcome); three or more office actions with no
+  interview; more than two RCEs. B2 is appended and labelled, since it is a live
+  section 121 risk even though it is not on the standing list.
+- **Coverage and caveats**.
 
-**Do not present a pattern as a finding count.** That is the distinction the triage
-exists to preserve, and it is also what keeps the report defensible.
-
-When the top-up is declined, say so — the report is corpus-only and counts on live
-applications may be understated. `topup.offer` carries the exact wording and price.
-
-**Read the `coverage` block before quoting anything.** The corpus stops at June 2023,
-and the three-state logic uses a stricter June 2022 horizon so a recently disposed case
-reports INDETERMINATE rather than FLAG. `incomplete_after` says where this account
-stops; anything later needs an ODP top-up, and `odp_topup_applied` records whether one
-was done. Never present a corpus-only portfolio as current.
-
-`reporting_notes` comes back populated with the confounders that apply to that specific
-entity — small denominator, national-stage share, restriction rate. Use them; they are
-generated because these numbers are routinely misread without them.
+**A rule firing on more than 10% of a portfolio, on 20+ cases, carries a note saying it
+describes filing practice rather than individual lapses.** Molex's 153 first-action
+allowances without a continuation is 18% of its portfolio — that is how a connector
+company prosecutes, not 153 mistakes. The cases are still listed; the note stops the
+list being read as an error count. Both conditions are needed: three of 25 applications
+is 12% and is still just three cases.
 
 ## Two traps in ODP search — both will silently corrupt a portfolio audit
 

@@ -451,6 +451,8 @@ def main() -> None:
                          "and otherwise reports the price without spending")
     pf.add_argument("--auto-seconds", type=int, default=15,
                     help="cost ceiling below which --topup auto proceeds without asking")
+    pf.add_argument("--max-cases", type=int, default=25,
+                    help="cases listed per prosecution event; 0 for all")
     pf.add_argument("--json", action="store_true",
                     help="emit the raw result instead of the readable report")
     pf.add_argument("--full", action="store_true",
@@ -485,7 +487,8 @@ def main() -> None:
             _print(out)
         else:
             import report
-            print(report.render(out))
+            print(report.render(out, max_cases=(None if args.max_cases == 0
+                                                else args.max_cases)))
         if args.save:
             print(f"\nfull result written to {args.save}", file=sys.stderr)
     elif args.cmd == "app":
