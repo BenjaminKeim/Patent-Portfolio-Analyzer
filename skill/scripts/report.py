@@ -18,8 +18,13 @@ from __future__ import annotations
 PATTERN_SHARE = 0.10
 PATTERN_MIN_CASES = 20
 
-# Ben's five, in his order. B2 is reported separately below - it is not on his list but
-# it is a live safe-harbour risk, so it is shown rather than silently dropped.
+# Ben's five, in his order.
+#
+# B2 (restriction, child filed but designated a continuation rather than a divisional)
+# has no section of its own. It is folded into B1 as a per-case note, because the two
+# fire on the same application and listing it twice misrepresents both: B1's heading
+# implies the non-elected claims were dropped, when in a B2 case they were actually
+# pursued - just under a label that may forfeit the section 121 safe harbour.
 SECTIONS = [
     ("B1", "Restriction issued, no divisional filed"),
     ("A1", "First-action allowance, no continuation filed"),
@@ -28,22 +33,19 @@ SECTIONS = [
     ("D3", "More than two RCEs"),
 ]
 
-EXTRA_SECTIONS = [
-    ("B2", "Restriction issued, child designated a continuation rather than a divisional"),
-]
-
 RULE_WHY = {
-    "B1": ("The non-elected claims were never pursued. Whether that was intended is not "
-           "in the record."),
+    "B1": ("The non-elected claims were never pursued as a divisional. Where the note "
+           "flags a section 121 risk, a continuing application WAS filed but not "
+           "designated a divisional - the safe harbour attaches to a divisional filed "
+           "as a result of the restriction, and courts look to substance and consonance "
+           "rather than the ADS label. Whether any of this was intended is not in the "
+           "record."),
     "A1": ("A first-action allowance means the examiner found nothing worth citing "
            "against the claims as presented."),
     "E1": ("Nobody petitions to revive a case they meant to abandon, so the petition is "
            "evidence the lapse was unintentional."),
     "D2": "An interview after two rejections is widely treated as best practice.",
     "D3": "Repeated RCEs without an appeal can indicate the case needed a different route.",
-    "B2": ("Section 121's safe harbour attaches to a divisional filed as a result of the "
-           "restriction. Courts look to substance and consonance rather than the ADS "
-           "label, so this warrants review rather than being a conclusion."),
 }
 
 
@@ -70,19 +72,34 @@ def _cases(results: list[dict], rule: str) -> list[dict]:
     return sorted(hits, key=lambda r: str(r.get("filed") or ""))
 
 
+def _note(r: dict, rule: str) -> str:
+    """The per-case column. Carries the revival outcome for E1, and for B1 the section
+    121 label risk that used to be its own B2 section."""
+    if rule == "E1":
+        return _revival_outcome(r)
+    if rule == "B1" and "B2" in (r.get("flagged") or []):
+        kinds = sorted({c.get("type") for c in (r.get("children") or []) if c.get("type")})
+        label = "/".join(kinds) or "continuing application"
+        return f"{label} filed, not a divisional - Sec. 121 label risk"
+    return ""
+
+
 def _table(cases: list[dict], rule: str, limit: int | None) -> list[str]:
     shown = cases if limit is None else cases[:limit]
     width = max((len(str(r.get("title") or "")) for r in shown), default=0)
     width = min(max(width, 20), 62)
+    notes = {id(r): _note(r, rule) for r in shown}
+    has_notes = any(notes.values())
+
     head = f"  {'Application':<12} {'Filed':<12} {'Title':<{width}}"
-    if rule == "E1":
-        head += "  Outcome"
+    if has_notes:
+        head += "  Note"
     lines = [head, "  " + "-" * (len(head) - 2)]
     for r in shown:
         title = str(r.get("title") or "")[:width]
         line = f"  {r['application']:<12} {str(r.get('filed') or ''):<12} {title:<{width}}"
-        if rule == "E1":
-            line += f"  {_revival_outcome(r)}"
+        if has_notes and notes[id(r)]:
+            line += f"  {notes[id(r)]}"
         lines.append(line)
     if limit is not None and len(cases) > limit:
         lines.append(f"  ... and {len(cases) - limit:,} more (use --max-cases 0 for all)")
@@ -132,15 +149,11 @@ def render(d: dict, max_cases: int | None = None) -> str:
 
     L += ["## Prosecution events", ""]
     any_hits = False
-    for rule, title in SECTIONS + EXTRA_SECTIONS:
+    for rule, title in SECTIONS:
         cases = _cases(results, rule)
-        if rule == "B2" and not cases:
-            continue
         n = len(cases)
         any_hits = any_hits or bool(n)
         heading = f"### {title} - {n:,}"
-        if rule == "B2":
-            heading += "  *(not on the requested list; shown because it is a live risk)*"
         L += [heading, ""]
         if not n:
             L += ["None.", ""]

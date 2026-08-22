@@ -179,8 +179,12 @@ findings because everything was still pending when it froze. One call surfaces s
 - **Prosecution events**, each case identified by application number, filing date and
   title: restriction with no divisional; first-action allowance with no continuation;
   petition to revive (with its outcome); three or more office actions with no
-  interview; more than two RCEs. B2 is appended and labelled, since it is a live
-  section 121 risk even though it is not on the standing list.
+  interview; more than two RCEs.
+- **B2 has no section of its own.** It is folded into B1 as a per-case note, because
+  both fire on the same application. Listing it twice misrepresents both: B1's heading
+  implies the non-elected claims were dropped, when in a B2 case they were pursued -
+  just under a label that may forfeit the section 121 safe harbour. The note reads
+  "CON filed, not a divisional - Sec. 121 label risk".
 - **Coverage and caveats**.
 
 **A rule firing on more than 10% of a portfolio, on 20+ cases, carries a note saying it
