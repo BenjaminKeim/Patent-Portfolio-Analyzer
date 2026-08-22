@@ -75,7 +75,11 @@ def find_corpus() -> Path:
 
 
 def connect(read_only: bool = True) -> "duckdb.DuckDBPyConnection":
-    return duckdb.connect(str(find_corpus()), read_only=read_only)
+    con = duckdb.connect(str(find_corpus()), read_only=read_only)
+    # Long portfolio queries otherwise emit an ASCII progress bar onto stdout, which
+    # corrupts the JSON this skill is meant to hand back.
+    con.execute("SET enable_progress_bar = false")
+    return con
 
 
 def _rows(con, sql: str, params: list | None = None) -> list[dict]:
@@ -189,6 +193,251 @@ def _action_stats(con, where: str, params: list) -> dict:
         params,
     )
     return rows[0] if rows else {}
+
+
+# ------------------------------------------------------------------------------- applicant
+# Company-level work reads applicant_organization directly. It deliberately does NOT
+# use app_company / cohort / app_facts: those are site-era derived tables frozen at 20
+# companies and filing years 2013-2019, and they look like a general company index
+# without being one. The underlying corpus covers every applicant.
+#
+# Default floor is 2012 because USPTO only began recording applicant organisation
+# systematically after the AIA - coverage is ~0% before 2012, 65% in 2013, ~90% from
+# 2015. Anything earlier is not a smaller portfolio, it is an unrecorded one.
+APPLICANT_FLOOR_YEAR = 2012
+
+# The corpus's last record is dated 2023-06-01, but that is NOT where it stops being
+# complete. PatEx carries published applications, so an application filed less than
+# ~18 months before the snapshot had not published and is simply absent. Measured
+# utility filings per quarter, against a full quarter of ~105,000:
+#   2021-Q4 101,430 (full)   2022-Q1 86,384 (79%)   2022-Q3 81,256 (74%)
+#   2022-Q4  62,828 (57%)    2023-Q1 14,664 (13%)   2023-Q2    307 (0.3%)
+# Quoting a portfolio as current up to June 2023 therefore overstates coverage badly.
+# Anything filed after CORPUS_COMPLETE_THROUGH needs an ODP top-up to be trusted.
+CORPUS_LAST_RECORD = "2023-06-01"
+CORPUS_COMPLETE_THROUGH = "2021-12-31"
+CORPUS_NEGLIGIBLE_AFTER = "2022-12-31"
+
+def _rule_event_codes() -> list[str]:
+    """Every event code the rules read, taken FROM the rules module.
+
+    The transactions table holds 507M rows, so a portfolio pull has to filter to the
+    codes that matter. Deriving the list here rather than restating it means a new rule
+    cannot silently go blind: the first version of this list was written before the
+    revival rule existed, so E1 could only ever fire on ODP data and read N/A for every
+    corpus record - a clean bill of health that had simply never been checked.
+    """
+    import rules as _r
+
+    codes: set[str] = set()
+    for name in dir(_r):
+        if name.endswith("_CODES"):
+            value = getattr(_r, name)
+            if isinstance(value, (set, frozenset, tuple, list)):
+                codes |= {c for c in value if isinstance(c, str)}
+    return sorted(codes)
+
+
+RULE_EVENT_CODES = _rule_event_codes()
+
+_NORM_SQL = (
+    "trim(regexp_replace(regexp_replace(upper({col}), '[^A-Z0-9 ]', ' ', 'g'), ' +', ' ', 'g'))"
+)
+
+
+def _applicant_scope_cte(utility_only: bool) -> str:
+    """Applications belonging to any of a set of normalised applicant names.
+
+    Matched against every applicant on the application, not just the first, so joint
+    filings are captured for both filers.
+    """
+    norm = _NORM_SQL.format(col="ap.applicant_organization")
+    return f"""
+        SELECT DISTINCT a.application_number, {norm} AS matched_name
+        FROM all_applicants ap
+        JOIN application_data a USING (application_number)
+        WHERE list_contains(?::VARCHAR[], {norm})
+          AND EXTRACT(YEAR FROM a.filing_date) >= ?
+          {"AND a.application_invention_type = 'Utility'" if utility_only else ""}
+    """
+
+
+SCOPE_TABLE = "entity_scope"
+
+
+def materialise_scope(con, names: list[str], since: int = APPLICANT_FLOOR_YEAR,
+                      utility_only: bool = True) -> int:
+    """Resolve an entity's applications into a temp table once, and reuse it.
+
+    Every query below would otherwise re-run the applicant join over all_applicants
+    (6.7M rows) against application_data (14.1M). Materialising once takes a
+    3,000-application portfolio from 11s to about 4s, and the saving grows with the
+    number of questions asked of the same scope.
+    """
+    con.execute(
+        f"CREATE OR REPLACE TEMP TABLE {SCOPE_TABLE} AS {_applicant_scope_cte(utility_only)}",
+        [names, since],
+    )
+    return con.execute(f"SELECT COUNT(*) FROM {SCOPE_TABLE}").fetchone()[0]
+
+
+def applicant_baseline(con, names: list[str], since: int = APPLICANT_FLOOR_YEAR,
+                       utility_only: bool = True, scoped: bool = False) -> dict:
+    """Allowance rate, pendency and action statistics for one resolved entity.
+
+    Pass scoped=True when materialise_scope() has already been called for these names.
+    """
+    if not names:
+        return {"applications": 0, "names": 0}
+    if not scoped:
+        materialise_scope(con, names, since, utility_only)
+
+    rows = _rows(
+        con,
+        f"""
+        SELECT {_BASELINE_SELECT}
+        FROM application_data
+        WHERE application_number IN (SELECT application_number FROM {SCOPE_TABLE})
+        """,
+    )
+    out = rows[0] if rows else {"applications": 0}
+    if out.get("applications"):
+        out.update(_action_stats(
+            con,
+            f"a.application_number IN (SELECT application_number FROM {SCOPE_TABLE})",
+            [since],
+        ))
+    out["names"] = len(names)
+    out["since"] = since
+    return out
+
+
+def applicant_applications(con, names: list[str], since: int = APPLICANT_FLOOR_YEAR,
+                           utility_only: bool = True, scoped: bool = False) -> list[dict]:
+    """Every application of a resolved entity, shaped for rules.from_corpus().
+
+    Three bulk queries - applications, rule-relevant events, children - assembled in
+    Python, rather than the three-queries-per-application that application_facts()
+    does. A 13,000-application portfolio would otherwise be 39,000 round trips.
+    """
+    if not names:
+        return []
+    if not scoped:
+        materialise_scope(con, names, since, utility_only)
+
+    apps = _rows(
+        con,
+        f"""
+        SELECT a.application_number, a.filing_date, a.patent_number, a.patent_issue_date,
+               a.appl_status_desc, a.appl_status_date, a.examiner_full_name,
+               a.examiner_art_unit, a.uspc_class, a.invention_title,
+               a.application_invention_type,
+               ANY_VALUE(s.matched_name) AS matched_applicant_name
+        FROM application_data a
+        JOIN {SCOPE_TABLE} s USING (application_number)
+        GROUP BY ALL
+        ORDER BY a.filing_date
+        """,
+    )
+    if not apps:
+        return []
+
+    by_app = {r["application_number"]: r for r in apps}
+    for r in apps:
+        r["events"] = []
+        r["children"] = []
+
+    # Both follow-up queries JOIN the materialised scope rather than passing the
+    # application numbers back in as a list. A list membership test against the
+    # 507M-row transactions table is a linear scan; as a join DuckDB hash-joins
+    # against the small scope set. Measured on a 3,000-application portfolio: 45s
+    # down to a couple of seconds.
+    for ev in _rows(
+        con,
+        f"""
+        SELECT t.application_number, t.event_code, t.recorded_date
+        FROM transactions t
+        JOIN {SCOPE_TABLE} s USING (application_number)
+        WHERE list_contains(?::VARCHAR[], t.event_code)
+        """,
+        [RULE_EVENT_CODES],
+    ):
+        by_app[ev["application_number"]]["events"].append(ev)
+
+    # continuation_type lives on the CHILD's row in continuity_parents, pointing at its
+    # parent, so children of X are rows WHERE parent_application_number = X. Reversing
+    # this returns silently empty results rather than an error.
+    for ch in _rows(
+        con,
+        f"""
+        SELECT cp.parent_application_number AS parent,
+               cp.application_number        AS child,
+               cp.continuation_type,
+               cc.child_filing_date
+        FROM continuity_parents cp
+        JOIN {SCOPE_TABLE} s ON s.application_number = cp.parent_application_number
+        LEFT JOIN continuity_children cc
+               ON cc.application_number       = cp.parent_application_number
+              AND cc.child_application_number = cp.application_number
+        """,
+    ):
+        by_app[ch["parent"]]["children"].append(ch)
+
+    return apps
+
+
+def applicant_context(con, since: int = APPLICANT_FLOOR_YEAR) -> dict:
+    """Confounders needed to read an entity's numbers honestly. Requires a
+    materialised scope.
+
+    National-stage share matters because foreign-origin filers use continuations far
+    less as a matter of house style, so a high A1 rate for them reflects filing
+    culture rather than a lapse. Technology-centre mix matters because restriction
+    rate tracks technology, not practice - semiconductor and display filers run
+    20-40%, software and communications filers 4-7%.
+    """
+    ns = _rows(
+        con,
+        f"""
+        SELECT COUNT(*) AS applications,
+               COUNT(*) FILTER (WHERE r.is_national_stage) AS national_stage,
+               ROUND(100.0 * COUNT(*) FILTER (WHERE r.is_national_stage)
+                     / NULLIF(COUNT(*), 0), 1) AS national_stage_share
+        FROM {SCOPE_TABLE} s
+        LEFT JOIN route r USING (application_number)
+        """,
+    )
+    centres = _rows(
+        con,
+        f"""
+        SELECT left(a.examiner_art_unit, 2) AS tech_center,
+               COUNT(*)                     AS applications
+        FROM application_data a
+        JOIN {SCOPE_TABLE} s USING (application_number)
+        -- Numeric art units only. Administrative units such as OPLA truncate to a
+        -- meaningless "OP" tech centre and are not a technology signal.
+        WHERE a.examiner_art_unit IS NOT NULL
+          AND regexp_matches(a.examiner_art_unit, '^[0-9]{{4}}')
+        GROUP BY 1 ORDER BY applications DESC LIMIT 6
+        """,
+    )
+    years = _rows(
+        con,
+        f"""
+        SELECT EXTRACT(YEAR FROM a.filing_date)::INT AS filing_year,
+               COUNT(*)                              AS applications,
+               ROUND(100.0 * COUNT(*) FILTER (WHERE {GRANTED})
+                     / NULLIF(COUNT(*) FILTER (WHERE ({GRANTED}) OR ({ABANDONED})), 0), 1)
+                                                     AS allowance_rate
+        FROM application_data a
+        JOIN {SCOPE_TABLE} s USING (application_number)
+        GROUP BY 1 ORDER BY 1
+        """,
+    )
+    out = ns[0] if ns else {}
+    out["tech_centers"] = centres
+    out["by_filing_year"] = years
+    return out
 
 
 # --------------------------------------------------------------------------- single application

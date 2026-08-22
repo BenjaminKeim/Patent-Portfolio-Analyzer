@@ -32,11 +32,28 @@ INTERVIEW_CODES = {"EXIN", "EXAC", "EXAT", "EXET"}
 APPEAL_CODES = {"N/AP"}
 FAI_PILOT_CODES = {"FAIA", "FAOO"}
 
+# A granted petition to revive is the evidence that an abandonment was UNINTENTIONAL.
+# Abandonment on its own is not a finding: 774,934 modern utility applications went
+# abandoned for failure to respond, which is simply the normal, cheap way to drop a
+# case you have decided not to pursue. Nobody files a revival petition on a case they
+# meant to abandon, so keying on the petition is what separates a docketing failure
+# from a deliberate decision. Measured: 42,444 granted, 211 dismissed.
+REVIVAL_GRANTED_CODES = {
+    "PREV", "MPREV", "P032", "MP032", "MP001",
+    "ODPET1", "ODPET3", "ODPET7", "MODPET1", "MODPET3", "MODPET7",
+}
+# Dismissed is the worse outcome: the lapse happened, revival was attempted, and the
+# application was lost anyway.
+REVIVAL_DISMISSED_CODES = {"ODPET4", "ODPET8", "MODPET4", "MODPET8"}
+
 CHILD_TYPES = {"CON", "DIV", "CIP"}
 
 # The corpus is a June 2023 snapshot. Allow a year of slack so a child filed shortly
 # before a parent issued still had time to be recorded before the pull.
 CORPUS_HORIZON = date(2022, 6, 30)
+
+# More than two RCEs. Measured: 59,525 modern utility applications.
+RCE_THRESHOLD = 2
 
 
 def _as_date(value) -> date | None:
@@ -125,6 +142,14 @@ class AppFacts:
     @property
     def had_restriction(self) -> bool:
         return self.first_restriction is not None
+
+    @property
+    def revivals_granted(self) -> int:
+        return self._count(REVIVAL_GRANTED_CODES)
+
+    @property
+    def revivals_dismissed(self) -> int:
+        return self._count(REVIVAL_DISMISSED_CODES)
 
     @property
     def disposition(self) -> str:
@@ -236,6 +261,45 @@ def evaluate(f: AppFacts) -> dict:
     else:
         out["D2"] = {"state": "N/A", "detail": "fewer than 3 office actions, or an interview occurred"}
 
+    # ---- D3: more than two RCEs
+    if f.rce_count > RCE_THRESHOLD:
+        out["D3"] = {"state": "FLAG",
+                     "detail": f"{f.rce_count} RCEs filed"
+                               + ("" if f.appeals else "; no appeal was taken")}
+    else:
+        out["D3"] = {"state": "N/A", "detail": f"{f.rce_count} RCE(s)"}
+
+    # ---- E1: unintentional abandonment, evidenced by a petition to revive
+    if f.revivals_dismissed and not f.revivals_granted:
+        out["E1"] = {"state": "FLAG",
+                     "detail": ("application went abandoned and a petition to revive was "
+                                "DISMISSED - the lapse was not cured and the application "
+                                "was lost")}
+    elif f.revivals_dismissed and f.revivals_granted:
+        # Both present means an early petition failed and a later one succeeded. The
+        # application was NOT lost, so it must not be reported as though it were.
+        out["E1"] = {"state": "FLAG",
+                     "detail": (f"application went abandoned unintentionally; "
+                                f"{f.revivals_dismissed} petition(s) to revive were dismissed "
+                                "before one was granted")}
+    elif f.revivals_granted:
+        out["E1"] = {"state": "FLAG",
+                     "detail": ("application went abandoned unintentionally and was revived "
+                                "on petition - the revival is evidence the abandonment was "
+                                "not a deliberate decision")}
+    else:
+        out["E1"] = {"state": "N/A", "detail": "no petition to revive on the record"}
+
+    # Counting rules read events that can still accrue while an application is alive.
+    # Two RCEs before the data horizon and a third after it is a finding the record
+    # cannot yet show, so a negative answer on a live application is provisional -
+    # true as of the data, not final.
+    if f.disposition == "pending":
+        for rule in ("D2", "D3", "E1"):
+            if out[rule]["state"] == "N/A":
+                out[rule]["provisional"] = True
+                out[rule]["detail"] += "; still pending, so this count may still grow"
+
     return out
 
 
@@ -307,6 +371,8 @@ def summarise(f: AppFacts, flags: dict) -> dict:
         "interviews": f.interviews,
         "appeals": f.appeals,
         "restriction": f.had_restriction,
+        "revivals_granted": f.revivals_granted,
+        "revivals_dismissed": f.revivals_dismissed,
         "first_action_allowance": f.first_action_allowance,
         "months_to_issue": f.months_to_issue,
         "children": [{"application": c.application, "type": c.kind,
