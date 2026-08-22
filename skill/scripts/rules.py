@@ -205,17 +205,36 @@ def evaluate(f: AppFacts) -> dict:
     out: dict[str, dict] = {}
     observable = f._observable()
 
+    # Children whose parentage code the source could not classify. PatEx carries 6,058
+    # children typed '?' under modern parents, and ODP marks ~11% of inline child
+    # entries the same way. Such a child may BE the divisional or the continuation the
+    # absence rules are looking for, so its presence must degrade the answer to
+    # INDETERMINATE - counting it as absence fabricates a FLAG. Only genuinely
+    # unclassified codes qualify: REI, REX, NST and the rest are known types that
+    # simply are not continuing applications, and must not soften an absence finding.
+    unknown_kids = [c for c in f.children if (c.kind or "?").strip() in ("", "?")]
+
     # ---- A1: first-action allowance, no continuation filed before issuance
     if not f.first_action_allowance or f.disposition != "granted":
         out["A1"] = {"state": "N/A", "detail": "not a granted first-action allowance"}
     elif not f.children_known:
         out["A1"] = {"state": "INDETERMINATE", "detail": "children not fetched"}
+    elif f.issue_date is None:
+        # 16,822 granted corpus records carry no issue date. Without it the copendency
+        # comparison cannot run, and silently dropping every child would flag a case
+        # whose continuation is sitting right there in the record.
+        out["A1"] = {"state": "INDETERMINATE",
+                     "detail": "granted but no issue date recorded; copendency cannot be tested"}
     else:
         kids = [c for c in f.children_of(*CHILD_TYPES)
-                if c.filed and f.issue_date and c.filed <= f.issue_date]
+                if c.filed and c.filed <= f.issue_date]
+        undated = [c for c in f.children_of(*CHILD_TYPES) if c.filed is None]
         if kids:
             out["A1"] = {"state": "PRESENT",
                          "detail": f"{len(kids)} continuing application(s) filed before issue"}
+        elif undated or unknown_kids:
+            out["A1"] = {"state": "INDETERMINATE",
+                         "detail": "a child exists whose filing date or type is not recorded"}
         elif not observable:
             out["A1"] = {"state": "INDETERMINATE",
                          "detail": "disposed too near the data horizon to confirm absence"}
@@ -232,6 +251,10 @@ def evaluate(f: AppFacts) -> dict:
         divs = f.children_of("DIV")
         if divs:
             out["B1"] = {"state": "PRESENT", "detail": f"{len(divs)} divisional(s) filed"}
+        elif unknown_kids:
+            out["B1"] = {"state": "INDETERMINATE",
+                         "detail": f"{len(unknown_kids)} child(ren) of unrecorded type - "
+                                   "one may be the divisional"}
         elif not observable:
             out["B1"] = {"state": "INDETERMINATE",
                          "detail": "disposed too near the data horizon to confirm absence"}
@@ -240,10 +263,15 @@ def evaluate(f: AppFacts) -> dict:
                          "detail": "restriction issued; no divisional filed for the non-elected claims"}
 
     # ---- B2: restriction issued, child filed as continuation rather than divisional
-    if not f.had_restriction or f.disposition == "pending" or not f.children_known:
-        out["B2"] = {"state": "N/A", "detail": "no restriction, still pending, or children unknown"}
+    if not f.had_restriction or f.disposition == "pending":
+        out["B2"] = {"state": "N/A", "detail": "no restriction, or still pending"}
+    elif not f.children_known:
+        out["B2"] = {"state": "INDETERMINATE", "detail": "children not fetched"}
     elif f.children_of("DIV"):
         out["B2"] = {"state": "PRESENT", "detail": "a divisional was filed"}
+    elif unknown_kids and not f.children_of("CON"):
+        out["B2"] = {"state": "INDETERMINATE",
+                     "detail": "a child of unrecorded type exists; its designation is unknown"}
     elif f.children_of("CON"):
         out["B2"] = {
             "state": "FLAG",

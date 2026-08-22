@@ -82,6 +82,51 @@ def run_rules() -> None:
     check("settled negative count is not provisional",
           rules.evaluate(settled)["D3"].get("provisional"), None)
 
+    # ---- unknown data must degrade to INDETERMINATE, never to FLAG or a clean N/A.
+    # PatEx carries 6,058 children typed '?' and 16,822 granted records with no issue
+    # date; ODP marks ~11% of inline child entries '?'. Each of these used to fabricate
+    # a confident answer.
+    C = rules.Child
+    restricted_granted = dict(
+        status="Patented Case", issue_date=date(2018, 1, 1),
+        events=ev(("2015-01-01", "CTRS"), ("2016-01-01", "MN/=.")))
+
+    f = facts(**restricted_granted, children=[C("2", "?", date(2017, 6, 1))])
+    out = rules.evaluate(f)
+    check("B1 with an unknown-type child is INDETERMINATE, not FLAG",
+          out["B1"]["state"], "INDETERMINATE")
+    check("B2 with only an unknown-type child is INDETERMINATE",
+          out["B2"]["state"], "INDETERMINATE")
+
+    f = facts(status="Patented Case", issue_date=None, status_date=date(2018, 1, 1),
+              events=ev(("2016-01-01", "MN/=.")),
+              children=[C("2", "CON", date(2017, 6, 1))])
+    check("A1 granted with no issue date is INDETERMINATE, not FLAG",
+          rules.evaluate(f)["A1"]["state"], "INDETERMINATE")
+
+    f = facts(status="Patented Case", issue_date=date(2018, 1, 1),
+              events=ev(("2016-01-01", "MN/=.")),
+              children=[C("2", "CON", None)])
+    check("A1 with an undated child is INDETERMINATE, not FLAG",
+          rules.evaluate(f)["A1"]["state"], "INDETERMINATE")
+
+    f = facts(**restricted_granted, children_known=False)
+    check("B2 with children not fetched is INDETERMINATE, not a clean N/A",
+          rules.evaluate(f)["B2"]["state"], "INDETERMINATE")
+
+    # A known non-continuing type (reissue) must NOT soften an absence finding -
+    # only genuinely unclassified codes ('?', blank) qualify as unknown.
+    f = facts(**restricted_granted, children=[C("2", "REI", date(2017, 6, 1))])
+    check("a reissue child does not degrade B1", rules.evaluate(f)["B1"]["state"], "FLAG")
+
+    # A dated, typed child must still win over the presence of an unknown sibling.
+    f = facts(**restricted_granted,
+              children=[C("2", "DIV", date(2017, 6, 1)), C("3", "?", None)])
+    out = rules.evaluate(f)
+    check("a real divisional still reads PRESENT beside an unknown sibling",
+          out["B1"]["state"], "PRESENT")
+    check("B2 PRESENT beside an unknown sibling", out["B2"]["state"], "PRESENT")
+
 
 # --------------------------------------------------------------------- merge planning
 def run_planning() -> None:
