@@ -415,7 +415,7 @@ def _throttle() -> None:
 def normalize_app_number(raw: str) -> str:
     """Strip formatting from a US application number, leaving digits only.
 
-    "18/731,126" -> "18731126". Because only digits survive, the result is safe to
+    "18/000,000" -> "18000000". Because only digits survive, the result is safe to
     interpolate into a URL path -- no traversal or injection is possible.
     """
     return re.sub(r'[/,.\s\-]', '', raw or '')
