@@ -32,11 +32,28 @@ INTERVIEW_CODES = {"EXIN", "EXAC", "EXAT", "EXET"}
 APPEAL_CODES = {"N/AP"}
 FAI_PILOT_CODES = {"FAIA", "FAOO"}
 
+# A granted petition to revive is the evidence that an abandonment was UNINTENTIONAL.
+# Abandonment on its own is not a finding: 774,934 modern utility applications went
+# abandoned for failure to respond, which is simply the normal, cheap way to drop a
+# case you have decided not to pursue. Nobody files a revival petition on a case they
+# meant to abandon, so keying on the petition is what separates a docketing failure
+# from a deliberate decision. Measured: 42,444 granted, 211 dismissed.
+REVIVAL_GRANTED_CODES = {
+    "PREV", "MPREV", "P032", "MP032", "MP001",
+    "ODPET1", "ODPET3", "ODPET7", "MODPET1", "MODPET3", "MODPET7",
+}
+# Dismissed is the worse outcome: the lapse happened, revival was attempted, and the
+# application was lost anyway.
+REVIVAL_DISMISSED_CODES = {"ODPET4", "ODPET8", "MODPET4", "MODPET8"}
+
 CHILD_TYPES = {"CON", "DIV", "CIP"}
 
 # The corpus is a June 2023 snapshot. Allow a year of slack so a child filed shortly
 # before a parent issued still had time to be recorded before the pull.
 CORPUS_HORIZON = date(2022, 6, 30)
+
+# More than two RCEs. Measured: 59,525 modern utility applications.
+RCE_THRESHOLD = 2
 
 
 def _as_date(value) -> date | None:
@@ -127,6 +144,14 @@ class AppFacts:
         return self.first_restriction is not None
 
     @property
+    def revivals_granted(self) -> int:
+        return self._count(REVIVAL_GRANTED_CODES)
+
+    @property
+    def revivals_dismissed(self) -> int:
+        return self._count(REVIVAL_DISMISSED_CODES)
+
+    @property
     def disposition(self) -> str:
         s = (self.status or "").lower()
         if "patented case" in s or "patent expired due to nonpayment" in s:
@@ -180,17 +205,36 @@ def evaluate(f: AppFacts) -> dict:
     out: dict[str, dict] = {}
     observable = f._observable()
 
+    # Children whose parentage code the source could not classify. PatEx carries 6,058
+    # children typed '?' under modern parents, and ODP marks ~11% of inline child
+    # entries the same way. Such a child may BE the divisional or the continuation the
+    # absence rules are looking for, so its presence must degrade the answer to
+    # INDETERMINATE - counting it as absence fabricates a FLAG. Only genuinely
+    # unclassified codes qualify: REI, REX, NST and the rest are known types that
+    # simply are not continuing applications, and must not soften an absence finding.
+    unknown_kids = [c for c in f.children if (c.kind or "?").strip() in ("", "?")]
+
     # ---- A1: first-action allowance, no continuation filed before issuance
     if not f.first_action_allowance or f.disposition != "granted":
         out["A1"] = {"state": "N/A", "detail": "not a granted first-action allowance"}
     elif not f.children_known:
         out["A1"] = {"state": "INDETERMINATE", "detail": "children not fetched"}
+    elif f.issue_date is None:
+        # 16,822 granted corpus records carry no issue date. Without it the copendency
+        # comparison cannot run, and silently dropping every child would flag a case
+        # whose continuation is sitting right there in the record.
+        out["A1"] = {"state": "INDETERMINATE",
+                     "detail": "granted but no issue date recorded; copendency cannot be tested"}
     else:
         kids = [c for c in f.children_of(*CHILD_TYPES)
-                if c.filed and f.issue_date and c.filed <= f.issue_date]
+                if c.filed and c.filed <= f.issue_date]
+        undated = [c for c in f.children_of(*CHILD_TYPES) if c.filed is None]
         if kids:
             out["A1"] = {"state": "PRESENT",
                          "detail": f"{len(kids)} continuing application(s) filed before issue"}
+        elif undated or unknown_kids:
+            out["A1"] = {"state": "INDETERMINATE",
+                         "detail": "a child exists whose filing date or type is not recorded"}
         elif not observable:
             out["A1"] = {"state": "INDETERMINATE",
                          "detail": "disposed too near the data horizon to confirm absence"}
@@ -207,6 +251,10 @@ def evaluate(f: AppFacts) -> dict:
         divs = f.children_of("DIV")
         if divs:
             out["B1"] = {"state": "PRESENT", "detail": f"{len(divs)} divisional(s) filed"}
+        elif unknown_kids:
+            out["B1"] = {"state": "INDETERMINATE",
+                         "detail": f"{len(unknown_kids)} child(ren) of unrecorded type - "
+                                   "one may be the divisional"}
         elif not observable:
             out["B1"] = {"state": "INDETERMINATE",
                          "detail": "disposed too near the data horizon to confirm absence"}
@@ -215,10 +263,15 @@ def evaluate(f: AppFacts) -> dict:
                          "detail": "restriction issued; no divisional filed for the non-elected claims"}
 
     # ---- B2: restriction issued, child filed as continuation rather than divisional
-    if not f.had_restriction or f.disposition == "pending" or not f.children_known:
-        out["B2"] = {"state": "N/A", "detail": "no restriction, still pending, or children unknown"}
+    if not f.had_restriction or f.disposition == "pending":
+        out["B2"] = {"state": "N/A", "detail": "no restriction, or still pending"}
+    elif not f.children_known:
+        out["B2"] = {"state": "INDETERMINATE", "detail": "children not fetched"}
     elif f.children_of("DIV"):
         out["B2"] = {"state": "PRESENT", "detail": "a divisional was filed"}
+    elif unknown_kids and not f.children_of("CON"):
+        out["B2"] = {"state": "INDETERMINATE",
+                     "detail": "a child of unrecorded type exists; its designation is unknown"}
     elif f.children_of("CON"):
         out["B2"] = {
             "state": "FLAG",
@@ -235,6 +288,45 @@ def evaluate(f: AppFacts) -> dict:
                      "detail": f"{f.office_actions} office actions, no interview conducted"}
     else:
         out["D2"] = {"state": "N/A", "detail": "fewer than 3 office actions, or an interview occurred"}
+
+    # ---- D3: more than two RCEs
+    if f.rce_count > RCE_THRESHOLD:
+        out["D3"] = {"state": "FLAG",
+                     "detail": f"{f.rce_count} RCEs filed"
+                               + ("" if f.appeals else "; no appeal was taken")}
+    else:
+        out["D3"] = {"state": "N/A", "detail": f"{f.rce_count} RCE(s)"}
+
+    # ---- E1: unintentional abandonment, evidenced by a petition to revive
+    if f.revivals_dismissed and not f.revivals_granted:
+        out["E1"] = {"state": "FLAG",
+                     "detail": ("application went abandoned and a petition to revive was "
+                                "DISMISSED - the lapse was not cured and the application "
+                                "was lost")}
+    elif f.revivals_dismissed and f.revivals_granted:
+        # Both present means an early petition failed and a later one succeeded. The
+        # application was NOT lost, so it must not be reported as though it were.
+        out["E1"] = {"state": "FLAG",
+                     "detail": (f"application went abandoned unintentionally; "
+                                f"{f.revivals_dismissed} petition(s) to revive were dismissed "
+                                "before one was granted")}
+    elif f.revivals_granted:
+        out["E1"] = {"state": "FLAG",
+                     "detail": ("application went abandoned unintentionally and was revived "
+                                "on petition - the revival is evidence the abandonment was "
+                                "not a deliberate decision")}
+    else:
+        out["E1"] = {"state": "N/A", "detail": "no petition to revive on the record"}
+
+    # Counting rules read events that can still accrue while an application is alive.
+    # Two RCEs before the data horizon and a third after it is a finding the record
+    # cannot yet show, so a negative answer on a live application is provisional -
+    # true as of the data, not final.
+    if f.disposition == "pending":
+        for rule in ("D2", "D3", "E1"):
+            if out[rule]["state"] == "N/A":
+                out[rule]["provisional"] = True
+                out[rule]["detail"] += "; still pending, so this count may still grow"
 
     return out
 
@@ -307,6 +399,8 @@ def summarise(f: AppFacts, flags: dict) -> dict:
         "interviews": f.interviews,
         "appeals": f.appeals,
         "restriction": f.had_restriction,
+        "revivals_granted": f.revivals_granted,
+        "revivals_dismissed": f.revivals_dismissed,
         "first_action_allowance": f.first_action_allowance,
         "months_to_issue": f.months_to_issue,
         "children": [{"application": c.application, "type": c.kind,

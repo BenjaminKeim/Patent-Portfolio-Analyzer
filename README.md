@@ -98,6 +98,33 @@ python scripts/split_details.py                         # (site only)
 
 Only the first three steps are needed for the skill. The rest feed the superseded site.
 
+## Scoping an audit to one company
+
+Portfolio work starts by resolving the company to an explicit set of applicant names:
+
+```bash
+python skill/scripts/audit.py resolve "Microsoft Corporation"
+```
+
+The policy is **strict filer identity** — the named entity plus its renamed and
+IP-holding vehicles, but not sibling operating companies, regional arms, or joint
+ventures. Names that cannot be classified confidently are excluded and reported with
+the number of applications at stake, so an understated denominator is visible rather
+than silent.
+
+Matching is on token boundaries, never substrings. **The company name must match
+exactly** at or below 10 characters — no typo budget, because at that length one edit
+is as likely to be a different company as a misspelling. Corporate-form and boilerplate
+words (Corp., Ltd., Licensing, Technology) do tolerate typos, since they are a closed
+vocabulary. Names that miss the company name by one character are reported in a
+separate **near-miss** list rather than silently dropped.
+
+`skill/scripts/test_entity.py` pins the cases that forced each of those choices, and
+`CONTEXT.md` explains them.
+
+This is a different question from the corpus disambiguation below, which rolls
+corporate families up for IFI-style ranking. An audit scope is deliberately narrower.
+
 ## Applicant disambiguation
 
 `config/canonical_seeds.csv` defines the tracked companies and their brand tokens; a

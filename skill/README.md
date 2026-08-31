@@ -19,11 +19,20 @@ company, any application, any examiner, against current data.
 
 ```
 scripts/
-  corpus.py      local PatEx DuckDB  - baselines, historical sweeps, no API key
-  odp_client.py  live USPTO ODP API  - current cases, credential from Credential Manager
-  rules.py       source-neutral prosecution rules (A1/B1/B2/D2)
-  audit.py       CLI that routes between the two and applies the rules
+  corpus.py       local PatEx DuckDB  - baselines, historical sweeps, no API key
+  odp_client.py   live USPTO ODP API  - current cases, credential from Credential Manager
+  entity.py       step 1: company name -> auditable scope of applicant names
+  rules.py        source-neutral prosecution rules (A1/B1/B2/D2)
+  audit.py        CLI that routes between the two and applies the rules
+  test_entity.py  regression tests for entity resolution
 ```
+
+`entity.py` runs first for portfolio work. It resolves a company name to an explicit
+list of applicant names under strict filer identity, and reports what it excluded and
+how many applications that covers. Matching is on token boundaries and bounded edit
+distance; both choices are load-bearing and the reasons are in `CONTEXT.md`. Like
+`rules.py` it is source-neutral — the corpus manifest is a fast path, but a live ODP
+name absent from the snapshot is classified by the same rules rather than dropped.
 
 `rules.py` normalises both sources into one `AppFacts` shape. Both use the same USPTO
 event codes and continuation-type codes, so the rules run unchanged on either — verified
