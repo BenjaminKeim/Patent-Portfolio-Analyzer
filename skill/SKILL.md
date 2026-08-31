@@ -27,9 +27,12 @@ and the corpus costs nothing. Reserve ODP calls for the specific case in hand.
 
 Requires `duckdb` and `requests` (`pip install -r requirements.txt`).
 
-The ODP key is read from the Windows Credential Manager generic credential
-`USPTO_ODP_API_KEY`, falling back to an environment variable of the same name (the
-mechanism `patent-filing-qc` uses). **Never print the key.** Verify everything with:
+ODP access runs through the shared client in the **`uspto-odp`** skill
+(`~/.claude/skills/uspto-odp/scripts/uspto_odp.py`); `scripts/odp_client.py` here is a
+thin adapter over it. The key is read from the Windows Credential Manager generic
+credential `USPTO_ODP_API_KEY`, falling back to an environment variable of the same
+name — see that skill's SKILL.md for the full search order and troubleshooting.
+**Never print the key.** Verify everything with:
 
 ```powershell
 python "$env:USERPROFILE\.claude\skills\patent-portfolio-analyzer\scripts\audit.py" doctor
