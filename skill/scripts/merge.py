@@ -140,6 +140,12 @@ def fetch(app_numbers: list[str], progress=None) -> dict[str, dict]:
     import odp_client
 
     out: dict[str, dict] = {}
+    # Sorted, so the same set of applications always produces the same batches and the
+    # same query strings. DuckDB does not guarantee row order without ORDER BY, so the
+    # corpus hands these back in a different order on every process - which changed the
+    # query text run to run and made the response cache miss every single time while
+    # looking like it was working. Order is meaningless to an OR set, so canonicalise it.
+    app_numbers = sorted(app_numbers)
     batches = [app_numbers[i:i + BATCH_SIZE] for i in range(0, len(app_numbers), BATCH_SIZE)]
     for n, batch in enumerate(batches, 1):
         query = "applicationNumberText:(" + " OR ".join(batch) + ")"

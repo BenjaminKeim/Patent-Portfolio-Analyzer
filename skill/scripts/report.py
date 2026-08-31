@@ -18,35 +18,12 @@ from __future__ import annotations
 PATTERN_SHARE = 0.10
 PATTERN_MIN_CASES = 20
 
-# Ben's five, in his order.
-#
-# B2 (restriction, child filed but designated a continuation rather than a divisional)
-# has no section of its own. It is folded into B1 as a per-case note, because the two
-# fire on the same application and listing it twice misrepresents both: B1's heading
-# implies the non-elected claims were dropped, when in a B2 case they were actually
-# pursued - just under a label that may forfeit the section 121 safe harbour.
-SECTIONS = [
-    ("B1", "Restriction issued, no divisional filed"),
-    ("A1", "First-action allowance, no continuation filed"),
-    ("E1", "Petition to revive"),
-    ("D2", "Three or more office actions, no examiner interview"),
-    ("D3", "More than two RCEs"),
-]
+# Sections, their order and their explanatory text all come from rules.RULES - the one
+# registry - so a rule reads identically here, in the chart, in the widget and in the
+# JSON, and no rule can be described one way in one place and another way elsewhere.
+import rules as _rules
 
-RULE_WHY = {
-    "B1": ("The non-elected claims were never pursued as a divisional. Where the note "
-           "flags a section 121 risk, a continuing application WAS filed but not "
-           "designated a divisional - the safe harbour attaches to a divisional filed "
-           "as a result of the restriction, and courts look to substance and consonance "
-           "rather than the ADS label. Whether any of this was intended is not in the "
-           "record."),
-    "A1": ("A first-action allowance means the examiner found nothing worth citing "
-           "against the claims as presented."),
-    "E1": ("Nobody petitions to revive a case they meant to abandon, so the petition is "
-           "evidence the lapse was unintentional."),
-    "D2": "An interview after two rejections is widely treated as best practice.",
-    "D3": "Repeated RCEs without an appeal can indicate the case needed a different route.",
-}
+SECTIONS = _rules.sections()
 
 
 def _revival_outcome(r: dict) -> str:
@@ -68,8 +45,16 @@ def _counts(results: list[dict]) -> dict:
 
 
 def _cases(results: list[dict], rule: str) -> list[dict]:
+    """Cases for one rule, oldest first.
+
+    The application number is part of the sort key, not decoration: filing date alone
+    leaves ties broken by fetch order, which differs between a cold run and a cached
+    one. Two runs over identical data then produce differently ordered reports and
+    cannot be diffed - which is exactly what someone re-running a client every few
+    weeks wants to do.
+    """
     hits = [r for r in results if rule in (r.get("flagged") or [])]
-    return sorted(hits, key=lambda r: str(r.get("filed") or ""))
+    return sorted(hits, key=lambda r: (str(r.get("filed") or ""), str(r["application"])))
 
 
 def _note(r: dict, rule: str) -> str:
@@ -106,7 +91,69 @@ def _table(cases: list[dict], rule: str, limit: int | None) -> list[str]:
     return lines
 
 
-def render(d: dict, max_cases: int | None = None) -> str:
+def _recent_section(d: dict) -> list[str]:
+    """Applications filed after the bulk data stops.
+
+    Reported apart from the portfolio counts on purpose. Most of this cohort is still
+    pending, so folding it into the rates above would dilute every denominator without
+    answering anything - the cases have not had time to answer the question each rule
+    asks. Kept visible because the alternative is a report that stops in 2023 and does
+    not say so.
+    """
+    rec = d.get("recent") or {}
+    if not rec:
+        return []
+    L = ["## Filed since the bulk data stops", ""]
+    if not rec.get("applied"):
+        L += [rec.get("offer", "Not swept."), ""]
+        return L
+
+    n = rec["applications"]
+    if not n:
+        L += [f"No in-scope applications filed since {rec['since']} were found in ODP.", ""]
+        return L
+
+    c = rec["counts"]
+    years = ", ".join(f"{y} ({k:,})" for y, k in (rec.get("by_filing_year") or {}).items())
+    L += [f"**{n:,} in-scope application(s)** filed since {rec['since']} - absent from "
+          "the bulk data entirely, found by sweeping ODP and evaluated by the same "
+          "rules. Not included in the counts or rates above.", "",
+          f"Filed: {years}." if years else "",
+          f"Of these, {c['granted']:,} have already issued and {c['abandoned']:,} have "
+          f"already gone abandoned; {c['pending']:,} are still pending.", ""]
+
+    rows = [(rule, v.get("FLAG", 0), v.get("INDETERMINATE", 0))
+            for rule, v in (rec.get("rules") or {}).items() if v.get("FLAG")]
+    if rows:
+        verb = "carries" if rec["flagged_count"] == 1 else "carry"
+        L += [f"**{rec['flagged_count']:,} of them {verb} at least one finding.**", ""]
+        width = max(len(r[0]) for r in rows)
+        L += [f"  {'Rule':<{width}}  Findings", "  " + "-" * (width + 10)]
+        for rule, flag, indet in sorted(rows, key=lambda x: -x[1]):
+            extra = f"  (+{indet:,} indeterminate)" if indet else ""
+            L.append(f"  {rule:<{width}}  {flag:,}{extra}")
+        L.append("")
+        cases = sorted((r for r in (rec.get("results") or []) if r.get("flagged")),
+                       key=lambda r: (str(r.get("filed") or ""), str(r["application"])))
+        if cases:
+            import rules as _r
+            L += ["  " + "-" * 76]
+            for r in cases[:25]:
+                names = "; ".join(_r.name(k) for k in r["flagged"])
+                L.append(f"  {r['application']:<11} {str(r.get('filed') or ''):<12} "
+                         f"{str(r.get('title') or '')[:38]:<40} {names}")
+            if len(cases) > 25:
+                L.append(f"  ... and {len(cases) - 25:,} more")
+            L.append("")
+    else:
+        L += ["No rule fires on this cohort yet - too little prosecution history.", ""]
+
+    L += [f"Cost: {rec['search_calls']} search call(s); the children come back on the "
+          "search response, so there are no per-application calls.", ""]
+    return L
+
+
+def render(d: dict, max_cases: int | None = None, charts: bool = True) -> str:
     if not d.get("resolved"):
         return f"# {d['entity']}\n\n{d.get('note', 'Could not resolve this company.')}\n"
 
@@ -147,6 +194,13 @@ def render(d: dict, max_cases: int | None = None) -> str:
               f"active at the freeze, so their counts and statuses may have moved. "
               f"Refreshing takes about {tup['estimated_seconds']}s.", ""]
 
+    # Charts before the case lists. A reader who sees "837" without a denominator
+    # reads it against the portfolio total; the bars put it against the set the rule
+    # could fire on, which is the only honest comparison.
+    if charts:
+        import chart
+        L += chart.render(results, SECTIONS)
+
     L += ["## Prosecution events", ""]
     any_hits = False
     for rule, title in SECTIONS:
@@ -163,7 +217,7 @@ def render(d: dict, max_cases: int | None = None) -> str:
             L += [f"**{pct:.1f}% of the portfolio.** At this rate the rule is describing "
                   "filing practice rather than listing individual lapses - read it as a "
                   "pattern, not as a count of errors.", ""]
-        L.append(RULE_WHY[rule])
+        L.append(_rules.RULES[rule]["why"])
         L.append("")
         L += _table(cases, rule, max_cases)
         L.append("")
@@ -171,8 +225,21 @@ def render(d: dict, max_cases: int | None = None) -> str:
     if not any_hits:
         L += ["No prosecution events found across this portfolio.", ""]
 
+    L += _recent_section(d)
+
     # ---- what the numbers rest on
     L += ["## Coverage and caveats", ""]
+    cache = d.get("cache") or {}
+    if cache.get("hits"):
+        age = cache.get("oldest_response_age_days")
+        when = cache.get("oldest_response_used")
+        if age is not None and age >= 1:
+            L.append(f"- {cache['hits']} USPTO response(s) came from the local cache; "
+                     f"the oldest was fetched {when} ({age} day(s) ago). Re-run with "
+                     "--cache refresh for current data.")
+        else:
+            L.append(f"- {cache['hits']} USPTO response(s) came from the local cache, "
+                     "all fetched today.")
     if not tup["applied"] and tup["refresh_needed"]:
         L.append(f"- Counts on the {tup['refresh_needed']:,} still-active applications may "
                  "be understated - a third RCE or a later interview would not show here.")

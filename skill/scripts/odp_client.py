@@ -13,15 +13,9 @@ Credentials, endpoints, and troubleshooting: ~/.claude/skills/uspto-odp/SKILL.md
 Check the key without printing it:
     python ~/.claude/skills/uspto-odp/scripts/uspto_odp.py doctor
 
-Usage:
-    python odp_client.py doctor
-    python odp_client.py app 18123456
-    python odp_client.py search "applicationMetaData.firstApplicantName:Microsoft*" --limit 25
 """
 from __future__ import annotations
 
-import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -60,11 +54,20 @@ ODPError = uspto_odp.ODPError
 BASE = uspto_odp.DEFAULT_BASE
 CRED_NAME = uspto_odp.CRED_NAME
 
-request = uspto_odp.request
-application = uspto_odp.application
-transactions = uspto_odp.transactions
-continuity = uspto_odp.continuity
-search = uspto_odp.search
+# Caching is wrapped HERE, at this skill's adapter, and deliberately not inside the
+# shared uspto_odp module. Other skills import that module and must not silently
+# inherit this skill's caching policy - a filing-receipt check wants live data every
+# time. Each exported entry point is wrapped once; the shared module's own internal
+# calls to its request() are untouched, so nothing double-caches.
+import odp_cache
+
+request = odp_cache.wrap("request", uspto_odp.request)
+application = odp_cache.wrap("application", uspto_odp.application)
+transactions = odp_cache.wrap("transactions", uspto_odp.transactions)
+continuity = odp_cache.wrap("continuity", uspto_odp.continuity)
+search = odp_cache.wrap("search", uspto_odp.search)
+
+# doctor() reports whether the API answers RIGHT NOW. Caching it would make it lie.
 doctor = uspto_odp.doctor
 
 # This skill's callers treat a missing key as fatal and catch ODPError to skip live
@@ -72,31 +75,7 @@ doctor = uspto_odp.doctor
 load_api_key = uspto_odp.require_api_key
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Query the USPTO Open Data Portal.")
-    sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("doctor")
-    a = sub.add_parser("app"); a.add_argument("application_number")
-    t = sub.add_parser("transactions"); t.add_argument("application_number")
-    c = sub.add_parser("continuity"); c.add_argument("application_number")
-    s = sub.add_parser("search"); s.add_argument("query"); s.add_argument("--limit", type=int, default=25)
-    args = p.parse_args()
-
-    try:
-        if args.cmd == "doctor":
-            out = doctor()
-        elif args.cmd == "app":
-            out = application(args.application_number)
-        elif args.cmd == "transactions":
-            out = transactions(args.application_number)
-        elif args.cmd == "continuity":
-            out = continuity(args.application_number)
-        else:
-            out = search(args.query, limit=args.limit)
-    except ODPError as exc:
-        print(json.dumps({"error": str(exc)}, indent=2)); sys.exit(1)
-    print(json.dumps(out, indent=2, default=str))
-
-
-if __name__ == "__main__":
-    main()
+# No CLI here. `python ~/.claude/skills/uspto-odp/scripts/uspto_odp.py` already exposes
+# doctor / app / transactions / continuity / search, and a second copy of the same
+# commands only creates somewhere for the two to disagree. This module is an import
+# target: the adapter that adds this skill's response cache to the shared client.

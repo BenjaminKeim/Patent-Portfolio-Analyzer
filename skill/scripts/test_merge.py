@@ -241,14 +241,40 @@ def run_live() -> None:
         print(f"  (live tests skipped - no ODP key: {str(exc)[:60]})")
         return
 
-    got = merge.fetch(["16354059", "17968610", "17513027"])
-    check("batched lookup returns every application asked for", len(got), 3)
-    check("events come back inline", bool(got["16354059"].get("eventDataBag")), True)
+    # Fixtures are discovered, not hardcoded. Naming three specific applications put
+    # real filing identifiers in the source of a public repo to prove a point about
+    # batching that has nothing to do with which applications are used - and pinned the
+    # assertion to one application's child list, so a newly filed continuation would
+    # fail the test for a reason unrelated to what it tests.
+    #
+    # The search response carries childContinuityBag inline, so one filer-agnostic query
+    # yields both the candidates and the expected children to compare against.
+    probe = odp_client.search(
+        "applicationMetaData.filingDate:[2015-01-01 TO 2015-12-31] AND "
+        "applicationMetaData.applicationTypeCategory:REGULAR", limit=50)
+    with_kids = [w for w in (probe.get("patentFileWrapperDataBag") or [])
+                 if w.get("childContinuityBag")]
+    if len(with_kids) < 3:
+        print("  (live tests skipped - ODP returned too few records with children)")
+        return
+    sample = with_kids[:3]
+    numbers = [str(w["applicationNumberText"]) for w in sample]
+    expected = {str(w["applicationNumberText"]):
+                sorted(str(c.get("childApplicationNumberText"))
+                       for c in w["childContinuityBag"])
+                for w in sample}
+
+    got = merge.fetch(numbers)
+    check("batched lookup returns every application asked for", len(got), len(numbers))
+    check("events come back inline",
+          all(w.get("eventDataBag") for w in got.values()), True)
     # Children must survive both the batching and the fields= selector, or every
     # absence-based rule silently over-flags.
-    kids = got["17968610"].get("childContinuityBag") or []
     check("children survive a batched, field-selected query",
-          [k.get("claimParentageTypeCode") for k in kids], ["DIV"])
+          {k: sorted(str(c.get("childApplicationNumberText"))
+                     for c in (v.get("childContinuityBag") or []))
+           for k, v in got.items()},
+          expected)
 
 
 if __name__ == "__main__":

@@ -14,12 +14,12 @@ inspectable set of applicant names under strict filer identity, and reports what
 left out. Pass the same name to `search --entity` to scope a result set with it.
 
 Usage:
-    python audit.py resolve "Microsoft Corporation"
-    python audit.py app 14973095
-    python audit.py app 18759963 --source odp
-    python audit.py apps 14973095 15162264 16039495
-    python audit.py search "applicationMetaData.firstApplicantName:Microsoft*" \
-        --entity "Microsoft Corporation" --limit 50
+    python audit.py resolve "Example Corporation"
+    python audit.py app <application_number>
+    python audit.py app <application_number> --source odp
+    python audit.py apps <application_number> <application_number> ...
+    python audit.py search "applicationMetaData.firstApplicantName:Example*" \
+        --entity "Example Corporation" --limit 50
     python audit.py doctor
 """
 from __future__ import annotations
@@ -37,6 +37,23 @@ import rules  # noqa: E402
 # examined; designs, plants and reissues follow different procedures and would distort
 # allowance-rate and office-action statistics.
 EXCLUDED_APP_TYPES = {"PROVSNL", "DESIGN", "PLANT", "REISSUE", "SIR", "PCT"}
+
+# ODP reports the type in TWO fields and they disagree. A design application comes back
+# as applicationTypeCategory "REGULAR" with applicationTypeCode "DES" - so a filter that
+# reads only the category lets every design through, and one was scored as a utility
+# finding before this was added. Both fields are checked, and the exclusion stays a
+# deny-list rather than an
+# allow-list so an unfamiliar code is kept and visible rather than silently dropped.
+EXCLUDED_APP_TYPE_CODES = {"DES", "PLT", "REI", "PRO", "PROV", "PCT", "SIR"}
+
+
+def excluded_type(meta: dict):
+    """(True, label) when this record is not a utility application worth auditing."""
+    cat = (meta.get("applicationTypeCategory") or "").strip().upper()
+    code = (meta.get("applicationTypeCode") or "").strip().upper()
+    if cat in EXCLUDED_APP_TYPES or code in EXCLUDED_APP_TYPE_CODES:
+        return True, (meta.get("applicationTypeLabelName") or code or cat)
+    return False, None
 
 
 def _corpus_facts(app_number: str):
@@ -137,9 +154,8 @@ def audit_search(query: str, limit: int, confirm_children: bool,
             # types that have no examination history worth auditing rather than
             # allow-listing, so an unfamiliar code is kept and visible rather than
             # silently dropped.
-            cat = (meta.get("applicationTypeCategory") or "").strip().upper()
-            if cat in EXCLUDED_APP_TYPES:
-                label = meta.get("applicationTypeLabelName") or cat
+            skip, label = excluded_type(meta)
+            if skip:
                 dropped["not_utility"].append({"application": app_no, "type": label})
                 continue
         if matcher:
@@ -203,7 +219,7 @@ def audit_search(query: str, limit: int, confirm_children: bool,
         "dropped_not_utility": len(dropped["not_utility"]),
         "examined": len(results),
         "continuity_calls": confirmed,
-        "tallies": tallies,
+        "tallies": rules.rekey(tallies),
         "dropped_detail": dropped,
         "flagged": [r for r in results if r["flagged"]],
         "results": results,
@@ -212,7 +228,8 @@ def audit_search(query: str, limit: int, confirm_children: bool,
 
 def portfolio(entity_name: str, since: int | None = None, flagged_limit: int = 25,
               utility_only: bool = True, topup: str = "auto",
-              auto_seconds: int = 15) -> dict:
+              auto_seconds: int = 15, recent: str = "auto",
+              recent_auto_seconds: int = 120) -> dict:
     """Whole-portfolio prosecution profile for one entity, from the corpus.
 
     Reads applicant_organization directly, so it works for ANY company - not only the
@@ -274,6 +291,30 @@ def portfolio(entity_name: str, since: int | None = None, flagged_limit: int = 2
                 tallies.setdefault(rule, {}).setdefault(v["state"], 0)
                 tallies[rule][v["state"]] += 1
 
+        # --- discover what the corpus never contained
+        #
+        # The top-up above refreshes rows this enumeration produced; it cannot find an
+        # application the corpus never held. Without this sweep a portfolio silently
+        # stops at the corpus horizon - for Example Corporation that hid 562 in-scope
+        # applications, 168 of them already granted or abandoned.
+        import recency
+        sweep: dict = {"applied": False}
+        if recent != "no":
+            sweep_since = _next_day(corpus.CORPUS_COMPLETE_THROUGH)
+            plan_r = recency.plan(entity_name, sweep_since)
+            run = recent == "yes" or (
+                recent == "auto" and plan_r.get("priced")
+                and plan_r["estimated_seconds"] <= recent_auto_seconds)
+            if run:
+                sweep = recency.sweep(entity_name, sweep_since,
+                                      exclude={r["application"] for r in results})
+                sweep["plan"] = plan_r
+            else:
+                sweep = {"applied": False, "plan": plan_r, "offer": (
+                    f"Applications filed since {sweep_since} are absent from the bulk "
+                    f"data entirely. Sweeping ODP for them takes about "
+                    f"{plan_r.get('estimated_seconds', '?')}s. Re-run with --recent yes.")}
+
         flagged = [r for r in results if r["flagged"]]
         return {
             "entity": entity_name,
@@ -328,7 +369,14 @@ def portfolio(entity_name: str, since: int | None = None, flagged_limit: int = 2
             },
             "baseline": baseline,
             "context": context,
-            "rules": tallies,
+            # Named, not keyed by the internal rule code. The codes are dict keys in
+            # the engine and mean nothing to a reader; rule_names decodes the per-case
+            # flags for anyone reading results[] directly.
+            "rules": rules.rekey(tallies),
+            "rule_names": rules.RULE_NAMES,
+            "at_a_glance": _at_a_glance(results),
+            "recent": sweep,
+            "cache": _cache_stats(),
             "flagged_count": len(flagged),
             "flagged": flagged[:flagged_limit],
             "flagged_truncated": max(0, len(flagged) - flagged_limit),
@@ -337,6 +385,24 @@ def portfolio(entity_name: str, since: int | None = None, flagged_limit: int = 2
         }
     finally:
         con.close()
+
+
+def _cache_stats() -> dict:
+    import odp_cache
+    return odp_cache.stats()
+
+
+def _next_day(iso: str) -> str:
+    from datetime import date, timedelta
+    y, m, d = (int(x) for x in iso.split("-"))
+    return str(date(y, m, d) + timedelta(days=1))
+
+
+def _at_a_glance(results: list[dict]) -> list[dict]:
+    """The chart rows as data, so a widget and the terminal bars cannot disagree."""
+    import chart
+    import report
+    return chart.summary(results, report.SECTIONS)
 
 
 def _confounders(baseline: dict, context: dict, merged: bool = False) -> list[str]:
@@ -355,7 +421,7 @@ def _confounders(baseline: dict, context: dict, merged: bool = False) -> list[st
             f"Bulk-data-only figures. Coverage is complete through "
             f"{corpus.CORPUS_COMPLETE_THROUGH} and decays sharply after that, so recent "
             "filings are under-counted and statuses may have moved on. Measured on "
-            "Neuralink, 10 of 25 shared records had advanced to granted since the "
+            "On one 25-application filer, 10 of 25 shared records had advanced to granted since the "
             "snapshot. Confirm anything recent against live data before reporting."
         )
     else:
@@ -419,6 +485,9 @@ def main() -> None:
     many.add_argument("application_numbers", nargs="+")
     many.add_argument("--source", choices=["auto", "corpus", "odp"], default="auto")
 
+    ca = sub.add_parser("cache", help="inspect the dated ODP response cache")
+    ca.add_argument("--json", action="store_true")
+
     srch = sub.add_parser("search", help="screen an ODP search result set")
     srch.add_argument("query")
     srch.add_argument("--limit", type=int, default=25)
@@ -451,8 +520,27 @@ def main() -> None:
                          "and otherwise reports the price without spending")
     pf.add_argument("--auto-seconds", type=int, default=15,
                     help="cost ceiling below which --topup auto proceeds without asking")
+    pf.add_argument("--cache", choices=["auto", "refresh", "off"], default="auto",
+                    help="reuse dated ODP responses from the local cache. auto (default) "
+                         "serves cached data under --cache-days old; refresh always "
+                         "fetches and files a new dated copy; off bypasses entirely. "
+                         "Nothing is ever deleted - each fetch is kept beside the last")
+    pf.add_argument("--cache-days", type=int, default=14,
+                    help="how old cached data may be before the run stops to ask")
+    pf.add_argument("--stale-ok", action="store_true",
+                    help="proceed with cached data past --cache-days; the report says "
+                         "how old it is")
+    pf.add_argument("--recent", choices=["auto", "yes", "no"], default="auto",
+                    help="sweep ODP for applications filed after the bulk data stops. "
+                         "These are absent from the corpus entirely - the top-up cannot "
+                         "find them, because it only refreshes rows the corpus produced. "
+                         "auto (default) sweeps when it costs under --recent-seconds")
+    pf.add_argument("--recent-seconds", type=int, default=120,
+                    help="cost ceiling below which --recent auto proceeds without asking")
     pf.add_argument("--max-cases", type=int, default=25,
                     help="cases listed per prosecution event; 0 for all")
+    pf.add_argument("--no-charts", action="store_true",
+                    help="suppress the at-a-glance bar charts")
     pf.add_argument("--json", action="store_true",
                     help="emit the raw result instead of the readable report")
     pf.add_argument("--full", action="store_true",
@@ -473,22 +561,49 @@ def main() -> None:
             Path(args.save).write_text(
                 json.dumps(manifest, indent=2, default=str), encoding="utf-8")
             print(f"\nmanifest written to {args.save}", file=sys.stderr)
+    elif args.cmd == "cache":
+        import odp_cache
+        summary = odp_cache.summary()
+        if args.json:
+            _print(summary)
+        else:
+            print(f"ODP response cache")
+            print(f"  location        {summary['location']}")
+            print(f"  requests cached {summary['requests_cached']:,}")
+            print(f"  responses kept  {summary['responses_kept']:,} "
+                  f"(nothing is ever deleted)")
+            print(f"  on disk         {summary['megabytes']} MB")
+            print(f"  date range      {summary['oldest'] or '-'} to "
+                  f"{summary['newest'] or '-'}")
+            print(f"  age limit       {summary['max_age_days']} days, after which a "
+                  f"run stops and asks")
     elif args.cmd == "portfolio":
-        out = portfolio(args.entity, since=args.since,
-                        flagged_limit=args.flagged_limit,
-                        utility_only=not args.include_non_utility,
-                        topup=args.topup, auto_seconds=args.auto_seconds)
+        import odp_cache
+        odp_cache.configure(mode=args.cache, max_age_days=args.cache_days,
+                            stale_ok=args.stale_ok)
+        try:
+            out = portfolio(args.entity, since=args.since,
+                            flagged_limit=args.flagged_limit,
+                            utility_only=not args.include_non_utility,
+                            topup=args.topup, auto_seconds=args.auto_seconds,
+                            recent=args.recent,
+                            recent_auto_seconds=args.recent_seconds)
+        except odp_cache.StaleCacheError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(2)
         if args.save:
             Path(args.save).write_text(
                 json.dumps(out, indent=2, default=str), encoding="utf-8")
         if args.json:
             if not args.full:
                 out.pop("results", None)
+                (out.get("recent") or {}).pop("results", None)
             _print(out)
         else:
             import report
             print(report.render(out, max_cases=(None if args.max_cases == 0
-                                                else args.max_cases)))
+                                                else args.max_cases),
+                                charts=not args.no_charts))
         if args.save:
             print(f"\nfull result written to {args.save}", file=sys.stderr)
     elif args.cmd == "app":

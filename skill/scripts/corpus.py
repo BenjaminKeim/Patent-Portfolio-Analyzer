@@ -11,7 +11,7 @@ come from here because they need volume, not currency.
 Usage:
     python corpus.py examiner "SMITH, JOHN A"
     python corpus.py artunit 2131
-    python corpus.py app 14973095
+    python corpus.py app <application_number>
     python corpus.py doctor
 """
 from __future__ import annotations

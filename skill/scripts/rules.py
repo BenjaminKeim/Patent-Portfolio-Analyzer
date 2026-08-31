@@ -17,6 +17,11 @@ would not yet be visible:
     FLAG          - enough time passed for it to appear, and it did not
     INDETERMINATE - disposed too close to the data horizon to tell
     N/A           - the rule does not apply to this application
+
+NAMING. The short keys below (A1, B1, ...) are dict keys and nothing more. They carry
+no meaning to a reader and must never reach one - every reader-facing surface, JSON
+included, names a rule by its description via RULE_NAMES. Keeping the keys internal is
+what lets the engine stay stable while the wording of a rule is free to change.
 """
 from __future__ import annotations
 
@@ -47,6 +52,120 @@ REVIVAL_GRANTED_CODES = {
 REVIVAL_DISMISSED_CODES = {"ODPET4", "ODPET8", "MODPET4", "MODPET8"}
 
 CHILD_TYPES = {"CON", "DIV", "CIP"}
+
+# THE RULE REGISTRY - everything about a rule except how it is evaluated.
+#
+# This used to be five dicts spread over three files, all keyed by the same codes: the
+# name here, the section order and explanatory text in report.py, the eligible set and
+# denominator wording in chart.py. Adding a rule meant editing five places, and they
+# drifted - the RCE denominator was changed in one and not the other, so the terminal
+# chart and the widget disagreed about the same number. One table cannot drift from
+# itself.
+#
+# name        - the reader-facing description. The short keys are dict keys and nothing
+#               more; they must never reach a reader.
+# order       - position in the report, or None for a rule with no section of its own.
+# why         - the paragraph under that section heading.
+# denominator - how to word the set the rule is charted against.
+# eligible    - which applications belong to that set. FROM_STATES means "everything the
+#               rule itself did not call N/A"; a callable computes it from the facts.
+#
+# Two ways of deriving the eligible set, and the distinction matters. Where a rule has a
+# state meaning the option WAS exercised - a divisional was filed, a continuation was
+# filed - the rule's own N/A verdict already defines the set exactly, and deriving it a
+# second time would let the bar drift out of step with evaluate(). Those use FROM_STATES.
+# The others are FLAG-or-nothing, so reading states would make every bar 100%.
+FROM_STATES = "states"
+
+RULES = {
+    "B1": {
+        "name": "Restriction issued, no divisional filed",
+        "order": 0,
+        "denominator": "closed cases that drew a restriction",
+        # Restriction issued and prosecution closed. Mirrors the rule's own N/A.
+        "eligible": FROM_STATES,
+        "why": ("The non-elected claims were never pursued as a divisional. Where the "
+                "note flags a section 121 risk, a continuing application WAS filed but "
+                "not designated a divisional - the safe harbour attaches to a divisional "
+                "filed as a result of the restriction, and courts look to substance and "
+                "consonance rather than the ADS label. Whether any of this was intended "
+                "is not in the record."),
+    },
+    "A1": {
+        "name": "First-action allowance, no continuation filed",
+        "order": 1,
+        "denominator": "first-action allowances",
+        # Granted on a first-action allowance. Cases allowed but never issued are N/A to
+        # the rule, and must not pad the denominator.
+        "eligible": FROM_STATES,
+        "why": ("A first-action allowance means the examiner found nothing worth citing "
+                "against the claims as presented."),
+    },
+    "E1": {
+        "name": "Petition to revive",
+        "order": 2,
+        "denominator": "cases that went abandoned",
+        # The case lapsed at some point; the petition is what separates unintentional
+        # from deliberate. Cases revived back to grant still belong in the denominator.
+        "eligible": lambda r: (r.get("disposition") == "abandoned"
+                               or (r.get("revivals_granted") or 0)
+                               + (r.get("revivals_dismissed") or 0) > 0),
+        "why": ("Nobody petitions to revive a case they meant to abandon, so the "
+                "petition is evidence the lapse was unintentional."),
+    },
+    "D2": {
+        "name": "Three or more office actions, no examiner interview",
+        "order": 3,
+        "denominator": "cases with 3+ office actions",
+        # Enough rejections for an interview to be the expected step.
+        "eligible": lambda r: (r.get("office_actions") or 0) >= 3,
+        "why": "An interview after two rejections is widely treated as best practice.",
+    },
+    "D3": {
+        "name": "More than two RCEs",
+        "order": 4,
+        "denominator": "applications in the portfolio",
+        # Every application. Ben's call, and it is right: nothing meaningful separates
+        # filing zero RCEs from filing one, so gating on "filed at least one"
+        # manufactures a denominator rather than describing one. The consequence is
+        # worth knowing - this row is an incidence rate across the portfolio while the
+        # rows above it are conditional rates, so the bar heights are not like-for-like.
+        "eligible": lambda r: True,
+        "why": ("Repeated RCEs without an appeal can indicate the case needed a "
+                "different route."),
+    },
+    # No section of its own: it is folded into the no-divisional section as a per-case
+    # note, because both fire on the same application. Listing it twice misrepresents
+    # both - the no-divisional heading implies the non-elected claims were dropped, when
+    # in these cases they were pursued, just under a label that may forfeit the section
+    # 121 safe harbour.
+    "B2": {
+        "name": "Restriction issued, child filed as a continuation rather than a divisional",
+        "order": None,
+        "denominator": None,
+        "eligible": None,
+        "why": None,
+    },
+}
+
+RULE_NAMES = {k: v["name"] for k, v in RULES.items()}
+
+
+def name(rule: str) -> str:
+    """The reader-facing description of a rule. Never print the key itself."""
+    return RULE_NAMES.get(rule, rule)
+
+
+def rekey(tallies: dict) -> dict:
+    """Re-key a {rule_key: ...} mapping by description, for anything a person reads."""
+    return {name(k): v for k, v in tallies.items()}
+
+
+def sections() -> list:
+    """(key, name) for the rules that get a report section, in order."""
+    ordered = [(v["order"], k) for k, v in RULES.items() if v["order"] is not None]
+    return [(k, RULES[k]["name"]) for _, k in sorted(ordered)]
+
 
 # The corpus is a June 2023 snapshot. Allow a year of slack so a child filed shortly
 # before a parent issued still had time to be recorded before the pull.
